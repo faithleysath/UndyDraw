@@ -10,6 +10,7 @@ export interface AppSettings {
   isPro: boolean;
   sendWithModifier: boolean; // true: Cmd/Ctrl+Enter 发送, false: Enter 发送
   enableCdnImageProcessing: boolean; // 是否启用 CDN 图片处理
+  resolutionModelMap?: Partial<Record<'1K' | '2K' | '4K', string>>; // 分辨率到模型的映射
 }
 
 export interface Part {

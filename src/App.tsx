@@ -1,6 +1,7 @@
 import React, { useEffect, useState, Suspense } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { useUiStore } from './store/useUiStore';
+import { AppSettings } from './types';
 import { ChatInterface } from './components/ChatInterface';
 import { ToastContainer } from './components/ui/ToastContainer';
 import { GlobalDialog } from './components/ui/GlobalDialog';
@@ -80,18 +81,35 @@ const App: React.FC = () => {
     const urlEndpoint = params.get('endpoint');
     const urlModel = params.get('model');
 
+    // 解析分辨率模型映射参数
+    const urlResolutionModelMap: Record<string, string> = {};
+    const resolutions = ['1K', '2K', '4K'] as const;
+    resolutions.forEach(resolution => {
+      const modelParam = params.get(`model_${resolution}`);
+      if (modelParam) {
+        urlResolutionModelMap[resolution] = modelParam;
+      }
+    });
+
     // Check if parameters are actually different from current settings
     const isDifferent =
         (urlApiKey && urlApiKey !== apiKey) ||
         (urlEndpoint && urlEndpoint !== settings.customEndpoint) ||
-        (urlModel && urlModel !== settings.modelName);
+        (urlModel && urlModel !== settings.modelName) ||
+        (Object.keys(urlResolutionModelMap).length > 0 &&
+         JSON.stringify(urlResolutionModelMap) !== JSON.stringify(settings.resolutionModelMap || {}));
 
-    if ((urlApiKey || urlEndpoint || urlModel) && isDifferent) {
+    if ((urlApiKey || urlEndpoint || urlModel || Object.keys(urlResolutionModelMap).length > 0) && isDifferent) {
         let message = "检测到 URL 中包含新的配置参数：\n\n";
         if (urlApiKey && urlApiKey !== apiKey) message += `- API Key: (已隐藏)\n`;
         if (urlEndpoint && urlEndpoint !== settings.customEndpoint) message += `- 接口地址: ${urlEndpoint}\n`;
         if (urlModel && urlModel !== settings.modelName) message += `- 模型: ${urlModel}\n`;
-        
+
+        // 添加分辨率模型映射参数
+        Object.entries(urlResolutionModelMap).forEach(([resolution, model]) => {
+            message += `- ${resolution}分辨率模型: ${model}\n`;
+        });
+
         message += "\n是否应用这些设置？这将覆盖您当前的配置。";
 
         showDialog({
@@ -100,13 +118,17 @@ const App: React.FC = () => {
             message: message,
             confirmLabel: '应用并保存',
             onConfirm: () => {
-                if (urlEndpoint || urlModel) {
-                    updateSettings({
-                        ...(urlEndpoint ? { customEndpoint: urlEndpoint } : {}),
-                        ...(urlModel ? { modelName: urlModel } : {}),
-                    });
+                const newSettings: Partial<AppSettings> = {};
+                if (urlEndpoint) newSettings.customEndpoint = urlEndpoint;
+                if (urlModel) newSettings.modelName = urlModel;
+                if (Object.keys(urlResolutionModelMap).length > 0) {
+                    newSettings.resolutionModelMap = urlResolutionModelMap;
                 }
-            
+
+                if (Object.keys(newSettings).length > 0) {
+                    updateSettings(newSettings);
+                }
+
                 if (urlApiKey) {
                     setApiKey(urlApiKey);
                 }
@@ -114,16 +136,16 @@ const App: React.FC = () => {
                 // Clean up URL
                 const newUrl = window.location.pathname;
                 window.history.replaceState({}, '', newUrl);
-                
+
                 addToast('配置已更新', 'success');
             }
         });
-    } else if (urlApiKey || urlEndpoint || urlModel) {
+    } else if (urlApiKey || urlEndpoint || urlModel || Object.keys(urlResolutionModelMap).length > 0) {
         // If parameters exist but are same as current, just clean up URL silently
         const newUrl = window.location.pathname;
         window.history.replaceState({}, '', newUrl);
     }
-  }, []);
+  }, [apiKey, settings.customEndpoint, settings.modelName, settings.resolutionModelMap, showDialog, updateSettings, setApiKey, addToast]);
 
   // Theme handling
   useEffect(() => {

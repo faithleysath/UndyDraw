@@ -59,6 +59,16 @@ export const SettingsPanel: React.FC = () => {
     params.set('apikey', apiKey);
     if (settings.customEndpoint) params.set('endpoint', settings.customEndpoint);
     if (settings.modelName) params.set('model', settings.modelName);
+
+    // 添加分辨率模型映射参数
+    if (settings.resolutionModelMap) {
+      Object.entries(settings.resolutionModelMap).forEach(([resolution, model]) => {
+        if (model.trim()) {
+          params.set(`model_${resolution}`, model);
+        }
+      });
+    }
+
     return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
   };
 
@@ -231,6 +241,67 @@ export const SettingsPanel: React.FC = () => {
                 })}
               </div>
             </section>
+
+            {/* Enable Resolution Model Mapping */}
+            <section>
+              <label className="flex items-center justify-between cursor-pointer group">
+                <span className="text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-300">分辨率专用模型</span>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={!!settings.resolutionModelMap}
+                    onChange={(e) => {
+                      const target = e.target as HTMLInputElement;
+                      if (target.checked) {
+                        // 初始化空的映射
+                        updateSettings({ resolutionModelMap: {} });
+                      } else {
+                        // 禁用功能，删除映射
+                        updateSettings({ resolutionModelMap: undefined });
+                      }
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="h-6 w-11 rounded-full bg-gray-200 dark:bg-gray-800 peer-focus:ring-2 peer-focus:ring-blue-500/50 peer-checked:bg-blue-600 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full"></div>
+                </div>
+              </label>
+              <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+                为不同分辨率设置专门的模型，覆盖默认模型设置
+              </p>
+            </section>
+
+            {/* Resolution Model Mapping */}
+            {settings.resolutionModelMap && (
+              <section>
+                <label className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-3">分辨率专用模型</label>
+                <div className="space-y-2">
+                  {(['1K', '2K', '4K'] as const).map((res) => (
+                    <div key={res} className="flex items-center gap-2">
+                      <span className="text-sm text-gray-600 dark:text-gray-400 w-12">{res}:</span>
+                      <input
+                        type="text"
+                        value={settings.resolutionModelMap[res] || ''}
+                        onChange={(e) => {
+                          const newMap = { ...settings.resolutionModelMap };
+                          const target = e.target as HTMLInputElement;
+                          if (target.value.trim()) {
+                            newMap[res] = target.value.trim();
+                          } else {
+                            delete newMap[res];
+                          }
+                          updateSettings({ resolutionModelMap: newMap });
+                        }}
+                        placeholder={settings.modelName || "gemini-3-pro-image-preview"}
+                        className="flex-1 px-3 py-1 text-sm border border-gray-200 dark:border-gray-800 rounded-md bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none transition"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+                  为不同分辨率设置专门的模型，留空则使用默认模型
+                </p>
+              </section>
+            )}
 
             {/* Grounding */}
             <section>

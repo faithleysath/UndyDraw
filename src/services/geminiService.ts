@@ -2,6 +2,16 @@ import type { Content, Part as SDKPart } from "@google/genai";
 import { AppSettings, Part } from '../types';
 import { parseMarkdownImages, containsCdnImages, batchDownloadImages } from '../utils/imageUrlParser';
 
+// Helper function to get model based on resolution
+const getModelByResolution = (settings: AppSettings): string => {
+  // 只有在 Pro 模式下才使用分辨率模型映射
+  if (settings.isPro && settings.resolutionModelMap?.[settings.resolution]) {
+    return settings.resolutionModelMap[settings.resolution]!;
+  }
+  // 否则使用默认模型
+  return settings.modelName || "gemini-3-pro-image-preview";
+};
+
 // Helper to construct user content
 const constructUserContent = (prompt: string, images: { base64Data: string; mimeType: string }[]): Content => {
   const userParts: SDKPart[] = [];
@@ -242,7 +252,7 @@ export const streamGeminiResponse = async function* (
 
   try {
     const responseStream = await ai.models.generateContentStream({
-      model: settings.modelName || "gemini-3-pro-image-preview",
+      model: getModelByResolution(settings),
       contents: contentsPayload,
       config: {
         ...(settings.isPro ? {
@@ -436,7 +446,7 @@ export const generateContent = async (
     }
 
     const response = await ai.models.generateContent({
-      model: settings.modelName || "gemini-3-pro-image-preview",
+      model: getModelByResolution(settings),
       contents: contentsPayload,
       config: {
         ...(settings.isPro ? {
