@@ -96,6 +96,25 @@ export const isValidImageUrl = (url: string): boolean => {
 };
 
 /**
+ * 将 Blob 转换为 Base64 字符串（使用 FileReader，支持大文件）
+ * @param blob Blob 对象
+ * @returns Promise<string> Base64 字符串（不含 data URL 前缀）
+ */
+const blobToBase64 = (blob: Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      // 移除 data URL 前缀 "data:image/png;base64,"
+      const base64 = result.split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error('FileReader 读取失败'));
+    reader.readAsDataURL(blob);
+  });
+};
+
+/**
  * 从 CDN URL 下载图片并转换为 Base64
  * @param url 图片 URL
  * @param timeout 请求超时时间（毫秒）
@@ -105,47 +124,44 @@ export const downloadImageAsBase64 = async (
   url: string,
   timeout: number = 10000
 ): Promise<{ mimeType: string; base64Data: string }> => {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-      reject(new Error('图片下载超时'));
-    }, timeout);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeout);
 
-    fetch(url, {
+  try {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         // 有些 CDN 需要特定的 headers
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
-    })
-    .then(response => {
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      // 从 Content-Type 头获取 MIME 类型，如果没有则从 URL 推断
-      const contentType = response.headers.get('content-type') || 'image/png';
-
-      return response.arrayBuffer().then(buffer => {
-        // 将 ArrayBuffer 转换为 Base64
-        const base64 = btoa(
-          String.fromCharCode(...new Uint8Array(buffer))
-        );
-
-        resolve({
-          mimeType: contentType,
-          base64Data: base64
-        });
-      });
-    })
-    .catch(error => {
-      clearTimeout(timeoutId);
-      reject(error);
     });
-  });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    // 从 Content-Type 头获取 MIME 类型，如果没有则从 URL 推断
+    const contentType = response.headers.get('content-type') || 'image/png';
+
+    // 使用 Blob + FileReader 方式转换，避免大图片栈溢出
+    const blob = await response.blob();
+    const base64Data = await blobToBase64(blob);
+
+    return {
+      mimeType: contentType,
+      base64Data
+    };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (controller.signal.aborted) {
+      throw new Error('图片下载超时');
+    }
+    throw error;
+  }
 };
 
 /**
