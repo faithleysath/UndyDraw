@@ -1,5 +1,6 @@
 import type { Content, Part as SDKPart } from "@google/genai";
 import { AppSettings, Part } from '../types';
+import { parseMarkdownImages, containsCdnImages, batchDownloadImages } from '../utils/imageUrlParser';
 
 // Helper to construct user content
 const constructUserContent = (prompt: string, images: { base64Data: string; mimeType: string }[]): Content => {
@@ -59,49 +60,134 @@ const formatGeminiError = (error: any): Error => {
   return newError;
 };
 
-// Helper to process SDK parts into app Parts
-const processSdkParts = (sdkParts: SDKPart[]): Part[] => {
+// Helper to process text and extract CDN images, converting them to inlineData format
+const processTextWithCdnImages = async (
+  text: string,
+  isThought: boolean = false,
+  signature?: string
+): Promise<Part[]> => {
+  const parts: Part[] = [];
+
+  try {
+    const { textParts, imageUrls } = parseMarkdownImages(text);
+
+    // 处理文本部分
+    textParts.forEach((textPart) => {
+      if (textPart.trim()) {
+        parts.push({
+          text: textPart,
+          thought: isThought,
+          ...(signature && { thoughtSignature: signature })
+        });
+      }
+    });
+
+    // 处理图片部分
+    if (imageUrls.length > 0) {
+      // 批量下载图片
+      const imageResults = await batchDownloadImages(
+        imageUrls.map(img => img.url),
+        3, // 并发下载数量
+        10000 // 10秒超时
+      );
+
+      imageResults.forEach((imageData, index) => {
+        if (imageData) {
+          parts.push({
+            inlineData: {
+              mimeType: imageData.mimeType,
+              data: imageData.base64Data
+            },
+            thought: isThought,
+            ...(signature && { thoughtSignature: signature })
+          });
+        } else {
+          // 如果图片下载失败，保留原始的 Markdown 文本
+          const originalMarkdown = `![${imageUrls[index].alt || 'image'}](${imageUrls[index].url})`;
+          const lastTextPart = parts[parts.length - 1];
+          if (lastTextPart && lastTextPart.text) {
+            lastTextPart.text += (lastTextPart.text.endsWith(' ') ? '' : ' ') + originalMarkdown;
+          } else {
+            parts.push({
+              text: originalMarkdown,
+              thought: isThought,
+              ...(signature && { thoughtSignature: signature })
+            });
+          }
+        }
+      });
+    }
+  } catch (error) {
+    console.error('处理 CDN 图片时出错:', error);
+    // 出错时保留原始文本
+    parts.push({
+      text: text,
+      thought: isThought,
+      ...(signature && { thoughtSignature: signature })
+    });
+  }
+
+  return parts;
+};
+
+// Helper to process SDK parts into app Parts (supports mixed response formats)
+const processSdkParts = async (sdkParts: SDKPart[], enableCdnProcessing: boolean = true): Promise<Part[]> => {
   const appParts: Part[] = [];
+  const textProcessingQueue: Array<{
+    text: string;
+    isThought: boolean;
+    signature?: string;
+  }> = [];
 
   for (const part of sdkParts) {
     const signature = (part as any).thoughtSignature;
     const isThought = !!(part as any).thought;
 
-    // Handle Text (Thought or Regular)
+    // Handle Text (check for CDN images)
     if (part.text !== undefined) {
-      const lastPart = appParts[appParts.length - 1];
-
-      // Check if we should append to the last part or start a new one.
-      // Append if: Last part exists AND is text AND matches thought type.
-      if (
-        lastPart && 
-        lastPart.text !== undefined && 
-        !!lastPart.thought === isThought
-      ) {
-        lastPart.text += part.text;
-        if (signature) {
-            lastPart.thoughtSignature = signature;
-        }
+      // 检查文本是否包含 CDN 图片且启用处理
+      if (enableCdnProcessing && containsCdnImages(part.text)) {
+        // 将需要处理 CDN 图片的文本加入队列
+        textProcessingQueue.push({
+          text: part.text,
+          isThought,
+          signature
+        });
       } else {
-        // New text block
-        const newPart: Part = { 
-          text: part.text, 
-          thought: isThought 
-        };
-        if (signature) {
-            newPart.thoughtSignature = signature;
+        // 处理普通文本
+        const lastPart = appParts[appParts.length - 1];
+
+        // Check if we should append to the last part or start a new one.
+        if (
+          lastPart &&
+          lastPart.text !== undefined &&
+          !!lastPart.thought === isThought
+        ) {
+          lastPart.text += part.text;
+          if (signature) {
+              lastPart.thoughtSignature = signature;
+          }
+        } else {
+          // New text block
+          const newPart: Part = {
+            text: part.text,
+            thought: isThought
+          };
+          if (signature) {
+              newPart.thoughtSignature = signature;
+          }
+          appParts.push(newPart);
         }
-        appParts.push(newPart);
       }
-    } 
-    // Handle Images
+    }
+    // Handle Images (inlineData format)
     else if (part.inlineData) {
-      const newPart: Part = { 
+      const newPart: Part = {
         inlineData: {
             mimeType: part.inlineData.mimeType || 'image/png',
             data: part.inlineData.data || ''
-        }, 
-        thought: isThought 
+        },
+        thought: isThought
       };
       if (signature) {
           newPart.thoughtSignature = signature;
@@ -109,6 +195,21 @@ const processSdkParts = (sdkParts: SDKPart[]): Part[] => {
       appParts.push(newPart);
     }
   }
+
+  // 处理包含 CDN 图片的文本
+  if (textProcessingQueue.length > 0) {
+    const processedTextParts = await Promise.all(
+      textProcessingQueue.map(async ({ text, isThought, signature }) =>
+        processTextWithCdnImages(text, isThought, signature)
+      )
+    );
+
+    // 将处理后的部分合并到结果中
+    processedTextParts.flat().forEach(processedPart => {
+      appParts.push(processedPart);
+    });
+  }
+
   return appParts;
 };
 
@@ -161,6 +262,9 @@ export const streamGeminiResponse = async function* (
     });
 
     let currentParts: Part[] = [];
+    let pendingTextBuffer = "";
+    let lastThoughtState = false;
+    let lastSignature: string | undefined;
 
     for await (const chunk of responseStream) {
       if (signal?.aborted) {
@@ -168,50 +272,111 @@ export const streamGeminiResponse = async function* (
       }
       const candidates = chunk.candidates;
       if (!candidates || candidates.length === 0) continue;
-      
+
       const newParts = candidates[0].content?.parts || [];
 
-      // Use the helper logic but incrementally
-      // We can't reuse processSdkParts directly because we need to accumulate state (currentParts)
-      // So we keep the loop logic here
+      // Process new parts
       for (const part of newParts) {
         const signature = (part as any).thoughtSignature;
         const isThought = !!(part as any).thought;
 
-        // Handle Text (Thought or Regular)
         if (part.text !== undefined) {
-          const lastPart = currentParts[currentParts.length - 1];
+          // Accumulate text to check for complete CDN image URLs
+          pendingTextBuffer += part.text;
+          lastThoughtState = isThought;
+          lastSignature = signature;
 
-          if (
-            lastPart && 
-            lastPart.text !== undefined && 
-            !!lastPart.thought === isThought
-          ) {
-            lastPart.text += part.text;
-            if (signature) {
-                lastPart.thoughtSignature = signature;
+          // Check if we have complete image URLs in the buffer and CDN processing is enabled
+          if (settings.enableCdnImageProcessing && containsCdnImages(pendingTextBuffer)) {
+            // Process the accumulated text for CDN images
+            try {
+              const processedParts = await processTextWithCdnImages(
+                pendingTextBuffer,
+                isThought,
+                signature
+              );
+
+              // Replace or append to currentParts
+              // Find the last text part and replace it, or append new parts
+              const lastTextIndex = currentParts
+                .map((p, i) => ({ part: p, index: i }))
+                .reverse()
+                .find(({ part }) => part.text !== undefined)?.index;
+
+              if (lastTextIndex !== undefined) {
+                // Remove the last text part
+                currentParts.splice(lastTextIndex, 1);
+                // Add processed parts
+                currentParts.push(...processedParts);
+              } else {
+                // Just append if no previous text part
+                currentParts.push(...processedParts);
+              }
+
+              // Clear the buffer
+              pendingTextBuffer = "";
+            } catch (error) {
+              console.error('处理 CDN 图片时出错，保留原始文本:', error);
+              // Fallback: add text as regular part
+              const lastPart = currentParts[currentParts.length - 1];
+              if (
+                lastPart &&
+                lastPart.text !== undefined &&
+                !!lastPart.thought === isThought
+              ) {
+                lastPart.text += part.text;
+                if (signature) {
+                  lastPart.thoughtSignature = signature;
+                }
+              } else {
+                currentParts.push({
+                  text: pendingTextBuffer,
+                  thought: isThought,
+                  ...(signature && { thoughtSignature: signature })
+                });
+              }
+              pendingTextBuffer = "";
             }
           } else {
-            const newPart: Part = { 
-              text: part.text, 
-              thought: isThought 
-            };
-            if (signature) {
-                newPart.thoughtSignature = signature;
+            // Regular text, append to last text part or create new one
+            const lastPart = currentParts[currentParts.length - 1];
+            if (
+              lastPart &&
+              lastPart.text !== undefined &&
+              !!lastPart.thought === isThought
+            ) {
+              lastPart.text += part.text;
+              if (signature) {
+                lastPart.thoughtSignature = signature;
+              }
+            } else {
+              currentParts.push({
+                text: part.text,
+                thought: isThought,
+                ...(signature && { thoughtSignature: signature })
+              });
             }
-            currentParts.push(newPart);
           }
-        } 
-        else if (part.inlineData) {
-          const newPart: Part = { 
+        } else if (part.inlineData) {
+          // Handle any pending text first
+          if (pendingTextBuffer.trim()) {
+            currentParts.push({
+              text: pendingTextBuffer,
+              thought: lastThoughtState,
+              ...(lastSignature && { thoughtSignature: lastSignature })
+            });
+            pendingTextBuffer = "";
+          }
+
+          const newPart: Part = {
             inlineData: {
-                mimeType: part.inlineData.mimeType || 'image/png',
-                data: part.inlineData.data || ''
-            }, 
-            thought: isThought 
+              mimeType: part.inlineData.mimeType || 'image/png',
+              data: part.inlineData.data || ''
+            },
+            thought: isThought
           };
           if (signature) {
-              newPart.thoughtSignature = signature;
+            newPart.thoughtSignature = signature;
           }
           currentParts.push(newPart);
         }
@@ -219,8 +384,17 @@ export const streamGeminiResponse = async function* (
 
       yield {
         userContent: currentUserContent,
-        modelParts: currentParts // Yield the accumulated parts
+        modelParts: currentParts
       };
+    }
+
+    // Handle any remaining text buffer
+    if (pendingTextBuffer.trim()) {
+      currentParts.push({
+        text: pendingTextBuffer,
+        thought: lastThoughtState,
+        ...(lastSignature && { thoughtSignature: lastSignature })
+      });
     }
   } catch (error) {
     console.error("Gemini API Stream Error:", error);
@@ -290,7 +464,7 @@ export const generateContent = async (
       throw new Error("No content generated.");
     }
 
-    const modelParts = processSdkParts(candidate.content.parts);
+    const modelParts = await processSdkParts(candidate.content.parts, settings.enableCdnImageProcessing);
 
     return {
       userContent: currentUserContent,

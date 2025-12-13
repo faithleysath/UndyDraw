@@ -63,6 +63,7 @@ export const useAppStore = create<AppState>()(
         theme: 'system',
         isPro: true,
         sendWithModifier: false, // 默认 Enter 发送
+        enableCdnImageProcessing: true, // 默认启用 CDN 图片处理
       },
       messages: [],
       imageHistory: [], // 初始化图片历史记录

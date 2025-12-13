@@ -9,6 +9,7 @@ export interface AppSettings {
   theme: 'light' | 'dark' | 'system';
   isPro: boolean;
   sendWithModifier: boolean; // true: Cmd/Ctrl+Enter 发送, false: Enter 发送
+  enableCdnImageProcessing: boolean; // 是否启用 CDN 图片处理
 }
 
 export interface Part {
